@@ -28,10 +28,13 @@ sp_oauth = SpotifyOAuth(SPOTIPY_CLIENT_ID, SPOTIPY_CLIENT_SECRET, SPOTIPY_REDIRE
 # Spotify Web Playback SDK script
 SPOTIFY_PLAYER_SCRIPT = 'https://sdk.scdn.co/spotify-player.js'
 
+class CreatePlaylistForm(FlaskForm):
+    playlist_name = StringField('Playlist Name', validators=[DataRequired()])
+    submit = SubmitField('Create Playlist')
+
 class AddSongForm(FlaskForm):
     track_uri = StringField('Spotify Track URI', validators=[DataRequired()])
     submit = SubmitField('Add Song')
-
 
 @app.route('/')
 def index():
@@ -47,15 +50,24 @@ def index():
 
 @app.route('/login')
 def login():
-    return redirect(sp_oauth.get_authorize_url())
+    if 'token_info' in session:
+        # user is already authenticated
+        return redirect(url_for('index'))
+    else:
+        # user is not authenticated, initiate Spotify login process
+        return redirect(sp_oauth.get_authorize_url())
 
 
 @app.route('/callback')
 def callback():
-    token_info = sp_oauth.get_access_token(request.args['code'])
-    session['token_info'] = token_info
-    session.permanent = True
-    return redirect(url_for('index'))
+    try:
+        token_info = sp_oauth.get_access_token(request.args['code'])
+        session['token_info'] = token_info
+        session.permanent = True
+        return redirect(url_for('index'))
+    except Exception as e:
+        print(f"Error in callback: {e}")
+        return "Error in callback"
 
 @app.route('/logout')
 def logout():
@@ -65,53 +77,61 @@ def logout():
     session.pop('token_info', None)
 
     # Redirect to the login page
-    return redirect(url_for('login'))
+    return render_template('logout.html')
 
-@app.route('/playlist', methods=['GET', 'POST'])
-def playlist():
+@app.route('/add_song/<playlist_id>', methods=['GET', 'POST'])
+def add_song(playlist_id):
+    form = AddSongForm()
+
+    if form.validate_on_submit():
+        token_info = session.get('token_info', None)
+
+        if token_info:
+            sp = Spotify(auth=token_info['access_token'])
+            track_uri = form.track_uri.data
+
+            # Add the song to the playlist
+            sp.playlist_add_items(playlist_id, [track_uri])
+
+    return redirect(url_for('view_playlist', playlist_id=playlist_id))
+
+@app.route('/create_playlist', methods=['GET', 'POST'])
+def create_playlist():
+    form = CreatePlaylistForm()
+
+    if form.validate_on_submit():
+        # Retrieve access token from the session
+        token_info = session.get('token_info', None)
+
+        if token_info:
+            sp = Spotify(auth=token_info['access_token'])
+            user_info = sp.me()
+
+            # Create a new playlist
+            playlist_name = form.playlist_name.data
+            playlist = sp.user_playlist_create(user_info['id'], playlist_name)
+
+
+            return redirect(url_for('view_playlists'))
+
+    return render_template('create_playlist.html', form=form)
+
+@app.route('/view_playlists')
+def view_playlists():
+    # Retrieve access token from the session
     token_info = session.get('token_info', None)
-    playlist_id = session.get('playlist_id', None)
 
-    if not token_info or not playlist_id:
-        return redirect(url_for('login'))
+    if token_info:
+        sp = Spotify(auth=token_info['access_token'])
+        user_info = sp.me()
 
-    sp = Spotify(auth=token_info['access_token'])
+        # Retrieve user's playlists
+        playlists = sp.user_playlists(user_info['id'])
 
-    # Get the playlist details
-    playlist = sp.playlist(playlist_id)
+        return render_template('view_playlists.html', playlists=playlists)
 
-    # Create an instance of the AddSongForm
-    add_song_form = AddSongForm()
+    return "User not authenticated."
 
-    # Handle form submission
-    if add_song_form.validate_on_submit():
-        # Example: Add a song to the playlist
-        track_uri = add_song_form.track_uri.data
-        sp.playlist_add_items(playlist_id, [track_uri])
-
-        # # Redirect back to the playlist page
-        # return redirect(url_for('playlist'))
-
-    return render_template('playlist.html', playlist=playlist, add_song_form=add_song_form,
-                           spotify_player_script=SPOTIFY_PLAYER_SCRIPT)
-
-
-@app.route('/add_song', methods=['POST'])
-def add_song():
-    token_info = session.get('token_info', None)
-    playlist_id = session.get('playlist_id', None)
-
-    if not token_info or not playlist_id:
-        return redirect(url_for('login'))
-
-    sp = Spotify(auth=token_info['access_token'])
-
-    # Example: Add a song to the playlist
-    track_uri = request.form.get('track_uri')
-    sp.playlist_add_items(playlist_id, [track_uri])
-
-    # Redirect back to the playlist page
-    return redirect(url_for('playlist'))
 
 if __name__ == '__main__':
     app.run(debug=True)
